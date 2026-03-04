@@ -1,5 +1,5 @@
 import 'package:geolocator/geolocator.dart';
-import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+// import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:get/get.dart';
 import 'package:my_geofence_app/models/geofence_model.dart';
 
@@ -13,8 +13,8 @@ class GeofenceService extends GetxService {
   // Is tracking on?
   final RxBool isTracking = false.obs;
 
-  // Notification plugin
-  late FlutterLocalNotificationsPlugin notificationPlugin;
+  // // Notification plugin
+  // late FlutterLocalNotificationsPlugin notificationPlugin;
 
   // ================================================
   // INITIALIZE (Run when app starts)
@@ -23,7 +23,7 @@ class GeofenceService extends GetxService {
     print('🔧 Initializing Geofence Service...');
 
     // Setup notifications
-    await _setupNotifications();
+    // await _setupNotifications();
 
     // Request permission
     await _requestLocationPermission();
@@ -34,31 +34,31 @@ class GeofenceService extends GetxService {
   // ================================================
   // SETUP NOTIFICATIONS
   // ================================================
-  Future<void> _setupNotifications() async {
-    notificationPlugin = FlutterLocalNotificationsPlugin();
+  // Future<void> _setupNotifications() async {
+  //   notificationPlugin = FlutterLocalNotificationsPlugin();
 
-    // Android settings
-    const AndroidInitializationSettings androidSettings =
-        AndroidInitializationSettings('@mipmap/ic_launcher');
+  //   // Android settings
+  //   const AndroidInitializationSettings androidSettings =
+  //       AndroidInitializationSettings('@mipmap/ic_launcher');
 
-    // iOS settings
-    const DarwinInitializationSettings iosSettings =
-        DarwinInitializationSettings(
-          requestAlertPermission: true,
-          requestBadgePermission: true,
-          requestSoundPermission: true,
-        );
+  //   // iOS settings
+  //   const DarwinInitializationSettings iosSettings =
+  //       DarwinInitializationSettings(
+  //         requestAlertPermission: true,
+  //         requestBadgePermission: true,
+  //         requestSoundPermission: true,
+  //       );
 
-    // Combine
-    const InitializationSettings settings = InitializationSettings(
-      android: androidSettings,
-      iOS: iosSettings,
-    );
+  //   // Combine
+  //   const InitializationSettings settings = InitializationSettings(
+  //     android: androidSettings,
+  //     iOS: iosSettings,
+  //   );
 
-    await notificationPlugin.initialize(settings);
-  }
+  //   await notificationPlugin.initialize(settings);
+  // }
 
-  // ================================================
+  // // ================================================
   // REQUEST LOCATION PERMISSION
   // ================================================
   Future<void> _requestLocationPermission() async {
@@ -148,51 +148,51 @@ class GeofenceService extends GetxService {
       print('Distance to ${geofence.name}: ${distance.toStringAsFixed(0)}m');
 
       // If I'm within the radius
-      if (distance <= geofence.radius) {
-        await _showNotification(
-          '📍 Entered ${geofence.name}',
-          'You are inside ${geofence.name}',
-        );
-      } else {
-        await _showNotification(
-          '📍 Left ${geofence.name}',
-          'You left ${geofence.name}',
-        );
-      }
+      // if (distance <= geofence.radius) {
+      //   await _showNotification(
+      //     '📍 Entered ${geofence.name}',
+      //     'You are inside ${geofence.name}',
+      //   );
+      // } else {
+      //   await _showNotification(
+      //     '📍 Left ${geofence.name}',
+      //     'You left ${geofence.name}',
+      //   );
+      // }
     }
   }
 
   // ================================================
   // SHOW NOTIFICATION
   // ================================================
-  Future<void> _showNotification(String title, String body) async {
-    const AndroidNotificationDetails androidDetails =
-        AndroidNotificationDetails(
-          'geofence_channel',
-          'Geofence Alerts',
-          channelDescription: 'Geofence notifications',
-          importance: Importance.max,
-          priority: Priority.high,
-        );
+  // Future<void> _showNotification(String title, String body) async {
+  //   const AndroidNotificationDetails androidDetails =
+  //       AndroidNotificationDetails(
+  //         'geofence_channel',
+  //         'Geofence Alerts',
+  //         channelDescription: 'Geofence notifications',
+  //         importance: Importance.max,
+  //         priority: Priority.high,
+  //       );
 
-    const DarwinNotificationDetails iosDetails = DarwinNotificationDetails(
-      presentAlert: true,
-      presentBadge: true,
-      presentSound: true,
-    );
+  //   const DarwinNotificationDetails iosDetails = DarwinNotificationDetails(
+  //     presentAlert: true,
+  //     presentBadge: true,
+  //     presentSound: true,
+  //   );
 
-    const NotificationDetails details = NotificationDetails(
-      android: androidDetails,
-      iOS: iosDetails,
-    );
+  //   const NotificationDetails details = NotificationDetails(
+  //     android: androidDetails,
+  //     iOS: iosDetails,
+  //   );
 
-    await notificationPlugin.show(
-      DateTime.now().millisecond,
-      title,
-      body,
-      details,
-    );
-  }
+  //   await notificationPlugin.show(
+  //     DateTime.now().millisecond,
+  //     title,
+  //     body,
+  //     details,
+  //   );
+  // }
 
   // ================================================
   // START TRACKING (CHECK EVERY 10 SECONDS)

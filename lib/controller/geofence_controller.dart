@@ -22,20 +22,26 @@ class GeofenceController extends GetxController {
   Future<void> _initialize() async {
     geofenceService = Get.find<GeofenceService>();
 
+    // Seed initial values (important for persisted geofences).
+    geofences.assignAll(geofenceService.geofences);
+    isTracking.value = geofenceService.isTracking.value;
+    statusMessage.value = isTracking.value ? '🟢 Tracking' : '🔴 Not Tracking';
+    currentLocation.value = geofenceService.currentLocation.value;
+
     // When service geofences change, update controller
-    ever(geofenceService.geofences, (geofences) {
-      this.geofences.value = geofences;
+    ever<List<Geofence>>(geofenceService.geofences, (list) {
+      geofences.assignAll(list);
     });
 
     // When tracking changes, update controller
-    ever(geofenceService.isTracking, (isTracking) {
-      this.isTracking.value = isTracking;
-      statusMessage.value = isTracking ? '🟢 Tracking' : '🔴 Not Tracking';
+    ever<bool>(geofenceService.isTracking, (tracking) {
+      isTracking.value = tracking;
+      statusMessage.value = tracking ? '🟢 Tracking' : '🔴 Not Tracking';
     });
 
     // When location changes, update controller
-    ever(geofenceService.currentLocation, (location) {
-      this.currentLocation.value = location;
+    ever<Position?>(geofenceService.currentLocation, (location) {
+      currentLocation.value = location;
     });
   }
 

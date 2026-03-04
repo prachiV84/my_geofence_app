@@ -1,7 +1,17 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
-// import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:get/get.dart';
 import 'package:my_geofence_app/models/geofence_model.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:geofence_foreground_service/geofence_foreground_service.dart';
+import 'package:geofence_foreground_service/constants/geofence_event_type.dart';
+import 'package:geofence_foreground_service/models/zone.dart';
+import 'package:geofence_foreground_service/exports.dart';
+import 'package:get_storage/get_storage.dart';
+
+import 'geofence_background_handler.dart';
 
 class GeofenceService extends GetxService {
   // Store all geofences (like a list on paper)
@@ -13,67 +23,63 @@ class GeofenceService extends GetxService {
   // Is tracking on?
   final RxBool isTracking = false.obs;
 
-  // // Notification plugin
-  // late FlutterLocalNotificationsPlugin notificationPlugin;
+  late final FlutterLocalNotificationsPlugin _notificationPlugin;
+  final Map<String, bool> _inside = <String, bool>{};
+  DateTime? _lastCheckAt;
+  final _box = GetStorage();
+  Timer? _locationPollTimer;
 
   // ================================================
   // INITIALIZE (Run when app starts)
   // ================================================
   Future<void> initialize() async {
-    print('🔧 Initializing Geofence Service...');
+    await GetStorage.init();
+    _loadGeofencesFromDisk();
 
-    // Setup notifications
-    // await _setupNotifications();
+    _notificationPlugin = FlutterLocalNotificationsPlugin();
+    await _setupNotifications();
+  }
 
-    // Request permission
-    await _requestLocationPermission();
+  void _loadGeofencesFromDisk() {
+    final raw = _box.read<List<dynamic>>('geofences');
+    if (raw == null) return;
+    final list = raw
+        .whereType<Map>()
+        .map((e) => Geofence.fromJson(Map<String, dynamic>.from(e)))
+        .toList();
+    geofences.assignAll(list);
+  }
 
-    print('✅ Geofence Service Ready!');
+  void _persistGeofences() {
+    _box.write('geofences', geofences.map((g) => g.toJson()).toList());
   }
 
   // ================================================
   // SETUP NOTIFICATIONS
   // ================================================
-  // Future<void> _setupNotifications() async {
-  //   notificationPlugin = FlutterLocalNotificationsPlugin();
+  Future<void> _setupNotifications() async {
+    const androidSettings = AndroidInitializationSettings(
+      '@mipmap/ic_launcher',
+    );
+    const iosSettings = DarwinInitializationSettings();
+    const settings = InitializationSettings(
+      android: androidSettings,
+      iOS: iosSettings,
+    );
 
-  //   // Android settings
-  //   const AndroidInitializationSettings androidSettings =
-  //       AndroidInitializationSettings('@mipmap/ic_launcher');
+    await _notificationPlugin.initialize(settings: settings);
 
-  //   // iOS settings
-  //   const DarwinInitializationSettings iosSettings =
-  //       DarwinInitializationSettings(
-  //         requestAlertPermission: true,
-  //         requestBadgePermission: true,
-  //         requestSoundPermission: true,
-  //       );
-
-  //   // Combine
-  //   const InitializationSettings settings = InitializationSettings(
-  //     android: androidSettings,
-  //     iOS: iosSettings,
-  //   );
-
-  //   await notificationPlugin.initialize(settings);
-  // }
-
-  // // ================================================
-  // REQUEST LOCATION PERMISSION
-  // ================================================
-  Future<void> _requestLocationPermission() async {
-    final status = await Geolocator.requestPermission();
-
-    if (status == LocationPermission.denied) {
-      print('❌ User denied location permission');
-      Get.snackbar('Permission', 'Location permission denied');
-    } else if (status == LocationPermission.deniedForever) {
-      print('❌ User denied permission forever');
-      Get.snackbar('Permission', 'Enable location in Settings');
-      await Geolocator.openLocationSettings();
-    } else {
-      print('✅ Location permission granted!');
-    }
+    const androidChannel = AndroidNotificationChannel(
+      'geofence_channel',
+      'Geofence Alerts',
+      description: 'Notifications when you enter/exit a geofence',
+      importance: Importance.max,
+    );
+    await _notificationPlugin
+        .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin
+        >()
+        ?.createNotificationChannel(androidChannel);
   }
 
   // ================================================
@@ -87,11 +93,11 @@ class GeofenceService extends GetxService {
       );
 
       currentLocation.value = position;
-      print('📍 Location: ${position.latitude}, ${position.longitude}');
+      debugPrint('📍 Location: ${position.latitude}, ${position.longitude}');
 
       return position;
     } catch (e) {
-      print('❌ Error getting location: $e');
+      debugPrint('❌ Error getting location: $e');
       return null;
     }
   }
@@ -116,7 +122,21 @@ class GeofenceService extends GetxService {
 
     // Add to list
     geofences.add(geofence);
-    print('✅ Added geofence: $name');
+    _persistGeofences();
+    _inside.remove(geofence.id);
+    debugPrint('✅ Added geofence: $name');
+
+    if (isTracking.value) {
+      await GeofenceForegroundService().addGeofenceZone(
+        zone: Zone(
+          id: geofence.id,
+          radius: geofence.radius,
+          coordinates: [LatLng.degree(geofence.latitude, geofence.longitude)],
+          triggers: const [GeofenceEventType.enter, GeofenceEventType.exit],
+          notificationResponsivenessMs: 10 * 1000,
+        ),
+      );
+    }
   }
 
   // ================================================
@@ -124,13 +144,26 @@ class GeofenceService extends GetxService {
   // ================================================
   void removeGeofence(String id) {
     geofences.removeWhere((g) => g.id == id);
-    print('✅ Removed geofence: $id');
+    _persistGeofences();
+    _inside.remove(id);
+    debugPrint('✅ Removed geofence: $id');
+
+    if (isTracking.value) {
+      GeofenceForegroundService().removeGeofenceZone(zoneId: id);
+    }
   }
 
   // ================================================
   // CHECK IF INSIDE ANY GEOFENCE
   // ================================================
   Future<void> checkGeofences() async {
+    final now = DateTime.now();
+    if (_lastCheckAt != null &&
+        now.difference(_lastCheckAt!) < const Duration(seconds: 10)) {
+      return;
+    }
+    _lastCheckAt = now;
+
     // Get where I am right now
     final position = await getCurrentLocation();
     if (position == null) return;
@@ -145,54 +178,62 @@ class GeofenceService extends GetxService {
         geofence.longitude,
       );
 
-      print('Distance to ${geofence.name}: ${distance.toStringAsFixed(0)}m');
+      debugPrint(
+        'Distance to ${geofence.name}: ${distance.toStringAsFixed(0)}m',
+      );
 
       // If I'm within the radius
-      // if (distance <= geofence.radius) {
-      //   await _showNotification(
-      //     '📍 Entered ${geofence.name}',
-      //     'You are inside ${geofence.name}',
-      //   );
-      // } else {
-      //   await _showNotification(
-      //     '📍 Left ${geofence.name}',
-      //     'You left ${geofence.name}',
-      //   );
-      // }
+      final isInsideNow = distance <= geofence.radius;
+      final wasInside = _inside[geofence.id];
+      if (wasInside == null) {
+        _inside[geofence.id] = isInsideNow;
+        continue;
+      }
+
+      if (!wasInside && isInsideNow) {
+        _inside[geofence.id] = true;
+        await _showNotification(
+          'Entered ${geofence.name}',
+          'You entered ${geofence.name}',
+        );
+      } else if (wasInside && !isInsideNow) {
+        _inside[geofence.id] = false;
+        await _showNotification(
+          'Exited ${geofence.name}',
+          'You left ${geofence.name}',
+        );
+      }
     }
   }
 
   // ================================================
   // SHOW NOTIFICATION
   // ================================================
-  // Future<void> _showNotification(String title, String body) async {
-  //   const AndroidNotificationDetails androidDetails =
-  //       AndroidNotificationDetails(
-  //         'geofence_channel',
-  //         'Geofence Alerts',
-  //         channelDescription: 'Geofence notifications',
-  //         importance: Importance.max,
-  //         priority: Priority.high,
-  //       );
+  Future<void> _showNotification(String title, String body) async {
+    const androidDetails = AndroidNotificationDetails(
+      'geofence_channel',
+      'Geofence Alerts',
+      channelDescription: 'Geofence notifications',
+      importance: Importance.max,
+      priority: Priority.high,
+    );
+    const iosDetails = DarwinNotificationDetails(
+      presentAlert: true,
+      presentBadge: true,
+      presentSound: true,
+    );
+    const details = NotificationDetails(
+      android: androidDetails,
+      iOS: iosDetails,
+    );
 
-  //   const DarwinNotificationDetails iosDetails = DarwinNotificationDetails(
-  //     presentAlert: true,
-  //     presentBadge: true,
-  //     presentSound: true,
-  //   );
-
-  //   const NotificationDetails details = NotificationDetails(
-  //     android: androidDetails,
-  //     iOS: iosDetails,
-  //   );
-
-  //   await notificationPlugin.show(
-  //     DateTime.now().millisecond,
-  //     title,
-  //     body,
-  //     details,
-  //   );
-  // }
+    await _notificationPlugin.show(
+      id: DateTime.now().millisecondsSinceEpoch ~/ 1000,
+      title: title,
+      body: body,
+      notificationDetails: details,
+    );
+  }
 
   // ================================================
   // START TRACKING (CHECK EVERY 10 SECONDS)
@@ -203,16 +244,42 @@ class GeofenceService extends GetxService {
       return;
     }
 
-    isTracking.value = true;
-    print('🚀 Tracking started');
+    final started = await GeofenceForegroundService().startGeofencingService(
+      notificationChannelId: 'com.example.my_geofence_app.geofencing',
+      contentTitle: 'Geofence tracking is active',
+      contentText: 'Monitoring your saved geofences in background',
+      serviceId: 525600,
+      callbackDispatcher: geofenceCallbackDispatcher,
+      isInDebugMode: true,
+    );
 
-    // Keep checking while tracking is on
-    while (isTracking.value) {
-      await checkGeofences();
-
-      // Wait 10 seconds before checking again
-      await Future.delayed(const Duration(seconds: 10));
+    if (!started) {
+      Get.snackbar('Error', 'Failed to start background geofencing service');
+      return;
     }
+
+    await GeofenceForegroundService().removeAllGeoFences();
+    for (final g in geofences) {
+      await GeofenceForegroundService().addGeofenceZone(
+        zone: Zone(
+          id: g.id,
+          radius: g.radius,
+          coordinates: [LatLng.degree(g.latitude, g.longitude)],
+          triggers: [GeofenceEventType.enter, GeofenceEventType.exit],
+          notificationResponsivenessMs: 10 * 1000,
+        ),
+      );
+    }
+
+    isTracking.value = true;
+    debugPrint('🚀 Tracking started');
+
+    await getCurrentLocation();
+    _locationPollTimer?.cancel();
+    _locationPollTimer = Timer.periodic(
+      const Duration(seconds: 10),
+      (_) => getCurrentLocation(),
+    );
   }
 
   // ================================================
@@ -220,6 +287,9 @@ class GeofenceService extends GetxService {
   // ================================================
   void stopTracking() {
     isTracking.value = false;
-    print('🛑 Tracking stopped');
+    _locationPollTimer?.cancel();
+    _locationPollTimer = null;
+    GeofenceForegroundService().stopGeofencingService();
+    debugPrint('🛑 Tracking stopped');
   }
 }

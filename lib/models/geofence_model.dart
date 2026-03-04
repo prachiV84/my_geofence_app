@@ -1,12 +1,10 @@
-// This is like a form for storing geofence info
 class Geofence {
-  String id; // Unique ID
-  String name; // "My Home", "My Office"
-  double latitude; // Map position (North/South)
-  double longitude; // Map position (East/West)
-  double radius; // Circle size in meters
+  final String id;
+  final String name;
+  final double latitude;
+  final double longitude;
+  final double radius;
 
-  // Constructor = Way to create a Geofence
   Geofence({
     required this.id,
     required this.name,
@@ -14,4 +12,20 @@ class Geofence {
     required this.longitude,
     required this.radius,
   });
+
+  factory Geofence.fromJson(Map<String, dynamic> json) => Geofence(
+        id: json['id'] as String,
+        name: json['name'] as String,
+        latitude: (json['latitude'] as num).toDouble(),
+        longitude: (json['longitude'] as num).toDouble(),
+        radius: (json['radius'] as num).toDouble(),
+      );
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+        'latitude': latitude,
+        'longitude': longitude,
+        'radius': radius,
+      };
 }

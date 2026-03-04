@@ -45,5 +45,16 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>We use your location to detect when you enter or exit your saved geofences, even when the app is closed.</string>
+	<key>NSLocationAlwaysUsageDescription</key>
+	<string>We use your location to detect geofence entry/exit events in the background.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>We use your location to show your current position and set up geofences.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>location</string>
+		<string>fetch</string>
+	</array>
 </dict>
 </plist>

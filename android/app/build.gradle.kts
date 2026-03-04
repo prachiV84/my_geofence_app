@@ -21,7 +21,10 @@ android {
 
     defaultConfig {
         applicationId = "com.example.my_geofence_app"
-        minSdk = flutter.minSdkVersion
+        // Required by `geofence_foreground_service`
+        // (and is also a good baseline for reliable background location behavior).
+        minSdk = 29
+        multiDexEnabled = true
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
@@ -40,5 +43,6 @@ flutter {
 
 // ADD THIS AT THE END:
 dependencies {
-    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.3")
+    implementation("androidx.multidex:multidex:2.0.1")
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
 }

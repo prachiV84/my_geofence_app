@@ -1,11 +1,11 @@
-class Geofence {
+class GeofenceModel {
   final String id;
   final String name;
   final double latitude;
   final double longitude;
   final double radius;
 
-  Geofence({
+  GeofenceModel({
     required this.id,
     required this.name,
     required this.latitude,
@@ -13,7 +13,7 @@ class Geofence {
     required this.radius,
   });
 
-  factory Geofence.fromJson(Map<String, dynamic> json) => Geofence(
+  factory GeofenceModel.fromJson(Map<String, dynamic> json) => GeofenceModel(
         id: json['id'] as String,
         name: json['name'] as String,
         latitude: (json['latitude'] as num).toDouble(),

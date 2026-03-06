@@ -1,16 +1,26 @@
+import 'package:flutter_map/flutter_map.dart';
 import 'package:get/get.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:latlong2/latlong.dart';
 import 'package:my_geofence_app/models/geofence_model.dart';
 import '../services/geofence_service.dart';
 
 class GeofenceController extends GetxController {
   late GeofenceService geofenceService;
 
-  // Data that UI can see and react to
-  final RxList<Geofence> geofences = <Geofence>[].obs;
-  final RxBool isTracking = false.obs;
-  final Rx<Position?> currentLocation = Rx(null);
-  final RxString statusMessage = 'Not Tracking'.obs;
+  // ── Reactive state ──────────────────────────────────────────
+  final RxList<GeofenceModel> geofences = <GeofenceModel>[].obs;
+  final Rx<Position?> currentLocation = Rx<Position?>(null);
+
+  // ── Map observables ─────────────────────────────────────────
+  /// Device latitude/longitude (updated live while tracking)
+  final Rx<LatLng?> currentLatLng = Rx<LatLng?>(null);
+
+  /// Point tapped on the map – cleared after a geofence is added
+  final Rx<LatLng?> selectedMapLatLng = Rx<LatLng?>(null);
+
+  /// flutter_map controller (programmatic camera moves)
+  final MapController mapController = MapController();
 
   @override
   void onInit() {
@@ -18,81 +28,72 @@ class GeofenceController extends GetxController {
     _initialize();
   }
 
-  // Initialize service
   Future<void> _initialize() async {
     geofenceService = Get.find<GeofenceService>();
 
-    // Seed initial values (important for persisted geofences).
+    // Seed from service
     geofences.assignAll(geofenceService.geofences);
-    isTracking.value = geofenceService.isTracking.value;
-    statusMessage.value = isTracking.value ? '🟢 Tracking' : '🔴 Not Tracking';
-    currentLocation.value = geofenceService.currentLocation.value;
+    _syncLatLng(geofenceService.currentLocation.value);
 
-    // When service geofences change, update controller
-    ever<List<Geofence>>(geofenceService.geofences, (list) {
-      geofences.assignAll(list);
+    // React to service changes
+    ever<List<GeofenceModel>>(geofenceService.geofences,
+        (list) => geofences.assignAll(list));
+
+    ever<Position?>(geofenceService.currentLocation, (pos) {
+      currentLocation.value = pos;
+      _syncLatLng(pos);
     });
 
-    // When tracking changes, update controller
-    ever<bool>(geofenceService.isTracking, (tracking) {
-      isTracking.value = tracking;
-      statusMessage.value = tracking ? '🟢 Tracking' : '🔴 Not Tracking';
-    });
-
-    // When location changes, update controller
-    ever<Position?>(geofenceService.currentLocation, (location) {
-      currentLocation.value = location;
-    });
+    // Fetch location immediately so the map has a starting centre
+    await _refresh();
   }
 
-  // ================================================
-  // ADD GEOFENCE FROM UI
-  // ================================================
+  void _syncLatLng(Position? pos) {
+    if (pos != null) {
+      currentLatLng.value = LatLng(pos.latitude, pos.longitude);
+    }
+  }
+
+  Future<void> _refresh() async {
+    final pos = await geofenceService.getCurrentLocation();
+    if (pos != null) {
+      currentLatLng.value = LatLng(pos.latitude, pos.longitude);
+    }
+  }
+
+  // ── "My location" FAB ───────────────────────────────────────
+  Future<void> goToMyLocation() async {
+    await _refresh();
+    final latlng = currentLatLng.value;
+    if (latlng != null) {
+      mapController.move(latlng, 16);
+    }
+  }
+
+  // ── Add geofence ────────────────────────────────────────────
   Future<void> addGeofence(
     String name,
     double latitude,
     double longitude,
     double radius,
   ) async {
-    if (name.isEmpty) {
-      Get.snackbar('Error', 'Name cannot be empty');
+    if (name.trim().isEmpty) {
+      Get.snackbar('Error', 'Name cannot be empty',
+          snackPosition: SnackPosition.BOTTOM);
       return;
     }
-
-    await geofenceService.addGeofence(name, latitude, longitude, radius);
-    Get.snackbar('Success', 'Geofence "$name" added!');
+    await geofenceService.addGeofence(name.trim(), latitude, longitude, radius);
+    selectedMapLatLng.value = null;
+    Get.snackbar('✅ Added', 'Geofence "$name" added!',
+        snackPosition: SnackPosition.BOTTOM);
   }
 
-  // ================================================
-  // REMOVE GEOFENCE
-  // ================================================
-  void removeGeofence(String id) {
-    geofenceService.removeGeofence(id);
-    Get.snackbar('Success', 'Geofence removed');
+  // ── Remove geofence ─────────────────────────────────────────
+  Future<void> removeGeofence(String id) async {
+    await geofenceService.removeGeofence(id);
+    Get.snackbar('Removed', 'Geofence deleted',
+        snackPosition: SnackPosition.BOTTOM);
   }
 
-  // ================================================
-  // START TRACKING
-  // ================================================
-  void startTracking() {
-    if (geofences.isEmpty) {
-      Get.snackbar('Error', 'Add a geofence first!');
-      return;
-    }
-    geofenceService.startTracking();
-  }
-
-  // ================================================
-  // STOP TRACKING
-  // ================================================
-  void stopTracking() {
-    geofenceService.stopTracking();
-  }
-
-  // ================================================
-  // GET CURRENT LOCATION (For UI)
-  // ================================================
-  Future<Position?> getLocation() async {
-    return await geofenceService.getCurrentLocation();
-  }
+  // No longer needed: startTracking and stopTracking are handled internally by the service.
 }

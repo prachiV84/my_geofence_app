@@ -1,3 +1,4 @@
+import 'package:awesome_notifications/awesome_notifications.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:my_geofence_app/controller/permission_controller.dart';
@@ -8,11 +9,18 @@ import 'package:my_geofence_app/services/geofence_service.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Dependency injection (GetX)
+  // Request notification permission from awesome_notifications
+  await AwesomeNotifications().isNotificationAllowed().then((allowed) async {
+    if (!allowed) {
+      await AwesomeNotifications().requestPermissionToSendNotifications();
+    }
+  });
+
+  // Dependency injection
   Get.put(GeofenceService());
   Get.put(PermissionController());
 
-  // Notification init is safe even before permissions are granted.
+  // Initialize service (notifications + native geofence manager)
   await Get.find<GeofenceService>().initialize();
 
   runApp(const MyApp());
@@ -45,14 +53,15 @@ class StartupGate extends StatefulWidget {
   State<StartupGate> createState() => _StartupGateState();
 }
 
-class _StartupGateState extends State<StartupGate> with WidgetsBindingObserver {
-  late final PermissionController controller;
+class _StartupGateState extends State<StartupGate>
+    with WidgetsBindingObserver {
+  late final PermissionController _permController;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    controller = Get.find<PermissionController>();
+    _permController = Get.find<PermissionController>();
   }
 
   @override
@@ -64,20 +73,19 @@ class _StartupGateState extends State<StartupGate> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      controller.refreshStatus();
+      _permController.refreshStatus();
     }
   }
 
   @override
   Widget build(BuildContext context) {
     return Obx(() {
-      if (controller.isLoading.value) {
+      if (_permController.isLoading.value) {
         return const Scaffold(
           body: Center(child: CircularProgressIndicator()),
         );
       }
-
-      return controller.allGranted
+      return _permController.allGranted
           ? const GeofenceScreen()
           : const PermissionScreen();
     });

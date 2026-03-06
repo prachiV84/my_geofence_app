@@ -1,295 +1,262 @@
 import 'dart:async';
+import 'dart:convert';
 
+import 'package:awesome_notifications/awesome_notifications.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart' show Color;
 import 'package:geolocator/geolocator.dart';
 import 'package:get/get.dart';
-import 'package:my_geofence_app/models/geofence_model.dart';
-import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:geofence_foreground_service/geofence_foreground_service.dart';
-import 'package:geofence_foreground_service/constants/geofence_event_type.dart';
-import 'package:geofence_foreground_service/models/zone.dart';
-import 'package:geofence_foreground_service/exports.dart';
-import 'package:get_storage/get_storage.dart';
+import 'package:native_geofence/native_geofence.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
-import 'geofence_background_handler.dart';
+import '../models/geofence_model.dart';
 
+// ─────────────────────────────────────────────────────────────
+// TOP-LEVEL CALLBACK (required by native_geofence)
+// Must be a top-level function annotated with @pragma('vm:entry-point')
+// ─────────────────────────────────────────────────────────────
+@pragma('vm:entry-point')
+Future<void> geofenceCallback(GeofenceCallbackParams params) async {
+  debugPrint('🔔 Geofence callback: $params');
+
+  final isEnter = params.event == GeofenceEvent.enter;
+  
+  // Extract human-readable name from the ID (Format: Name_Timestamp)
+  String zoneName = 'Unknown Zone';
+  if (params.geofences.isNotEmpty) {
+    final fullId = params.geofences.first.id;
+    if (fullId.contains('_')) {
+      zoneName = fullId.split('_').first;
+    } else {
+      zoneName = fullId;
+    }
+  }
+
+  await AwesomeNotifications().createNotification(
+    content: NotificationContent(
+      id: DateTime.now().millisecondsSinceEpoch ~/ 1000,
+      channelKey: 'geofence_channel',
+      title: isEnter ? '📍 You have arrived' : '🚪 You have left', // Premium wording
+      body: isEnter
+          ? 'You have arrived at "$zoneName"'
+          : 'You left "$zoneName"',
+      notificationLayout: NotificationLayout.Default,
+      color: const Color(0xFF0066FF),
+    ),
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// GEOFENCE SERVICE
+// ─────────────────────────────────────────────────────────────
 class GeofenceService extends GetxService {
-  // Store all geofences (like a list on paper)
-  final RxList<Geofence> geofences = <Geofence>[].obs;
+  static const _prefKey = 'geofences_v2';
+  static const _enabledKey = 'geofencing_enabled';
 
-  // Store current location
-  final Rx<Position?> currentLocation = Rx(null);
+  final RxList<GeofenceModel> geofences = <GeofenceModel>[].obs;
+  final Rx<Position?> currentLocation = Rx<Position?>(null);
+  final RxBool isGlobalEnabled = true.obs;
 
-  // Is tracking on?
-  final RxBool isTracking = false.obs;
+  StreamSubscription<Position>? _positionSub;
+  SharedPreferences? _prefs;
 
-  late final FlutterLocalNotificationsPlugin _notificationPlugin;
-  final Map<String, bool> _inside = <String, bool>{};
-  DateTime? _lastCheckAt;
-  final _box = GetStorage();
-  Timer? _locationPollTimer;
-
-  // ================================================
-  // INITIALIZE (Run when app starts)
-  // ================================================
+  // ──────────────────────────────
+  // INITIALIZE
+  // ──────────────────────────────
   Future<void> initialize() async {
-    await GetStorage.init();
-    _loadGeofencesFromDisk();
-
-    _notificationPlugin = FlutterLocalNotificationsPlugin();
+    _prefs = await SharedPreferences.getInstance();
+    
+    // Load global state
+    isGlobalEnabled.value = _prefs?.getBool(_enabledKey) ?? true;
+    
+    _loadGeofences();
     await _setupNotifications();
+    await NativeGeofenceManager.instance.initialize();
+    
+    // Automatically start tracking all saved geofences if enabled
+    if (isGlobalEnabled.value) {
+      await startTracking();
+    }
   }
 
-  void _loadGeofencesFromDisk() {
-    final raw = _box.read<List<dynamic>>('geofences');
-    if (raw == null) return;
-    final list = raw
-        .whereType<Map>()
-        .map((e) => Geofence.fromJson(Map<String, dynamic>.from(e)))
-        .toList();
-    geofences.assignAll(list);
+  // ──────────────────────────────
+  // GLOBAL TOGGLE
+  // ──────────────────────────────
+  Future<void> setGlobalEnabled(bool enabled) async {
+    isGlobalEnabled.value = enabled;
+    await _prefs?.setBool(_enabledKey, enabled);
+    
+    if (enabled) {
+      await startTracking();
+      debugPrint('✅ Global Geofencing ENABLED');
+    } else {
+      await stopTracking();
+      debugPrint('🛑 Global Geofencing DISABLED');
+    }
   }
 
-  void _persistGeofences() {
-    _box.write('geofences', geofences.map((g) => g.toJson()).toList());
-  }
-
-  // ================================================
-  // SETUP NOTIFICATIONS
-  // ================================================
+  // ──────────────────────────────
+  // NOTIFICATIONS
+  // ──────────────────────────────
   Future<void> _setupNotifications() async {
-    const androidSettings = AndroidInitializationSettings(
-      '@mipmap/ic_launcher',
+    await AwesomeNotifications().initialize(
+      null, // use default app icon
+      [
+        NotificationChannel(
+          channelKey: 'geofence_channel',
+          channelName: 'Geofence Alerts',
+          channelDescription: 'Notifications when you enter or exit a geofence',
+          defaultColor: const Color(0xFF0066FF),
+          importance: NotificationImportance.High,
+          channelShowBadge: true,
+          playSound: true,
+          enableVibration: true,
+        ),
+      ],
     );
-    const iosSettings = DarwinInitializationSettings();
-    const settings = InitializationSettings(
-      android: androidSettings,
-      iOS: iosSettings,
-    );
-
-    await _notificationPlugin.initialize(settings: settings);
-
-    const androidChannel = AndroidNotificationChannel(
-      'geofence_channel',
-      'Geofence Alerts',
-      description: 'Notifications when you enter/exit a geofence',
-      importance: Importance.max,
-    );
-    await _notificationPlugin
-        .resolvePlatformSpecificImplementation<
-          AndroidFlutterLocalNotificationsPlugin
-        >()
-        ?.createNotificationChannel(androidChannel);
   }
 
-  // ================================================
-  // GET CURRENT LOCATION
-  // ================================================
+  // ──────────────────────────────
+  // PERSISTENCE (SharedPreferences)
+  // ──────────────────────────────
+  void _loadGeofences() {
+    final raw = _prefs?.getString(_prefKey);
+    if (raw == null) return;
+    try {
+      final list = (jsonDecode(raw) as List)
+          .map((e) => GeofenceModel.fromJson(Map<String, dynamic>.from(e as Map)))
+          .toList();
+      geofences.assignAll(list);
+    } catch (e) {
+      debugPrint('⚠️ Failed to load geofences: $e');
+    }
+  }
+
+  Future<void> _persistGeofences() async {
+    final encoded = jsonEncode(geofences.map((g) => g.toJson()).toList());
+    await _prefs?.setString(_prefKey, encoded);
+  }
+
+  // ──────────────────────────────
+  // LOCATION
+  // ──────────────────────────────
   Future<Position?> getCurrentLocation() async {
     try {
-      // Get location from GPS
-      final position = await Geolocator.getCurrentPosition(
+      final pos = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
       );
-
-      currentLocation.value = position;
-      debugPrint('📍 Location: ${position.latitude}, ${position.longitude}');
-
-      return position;
+      currentLocation.value = pos;
+      return pos;
     } catch (e) {
-      debugPrint('❌ Error getting location: $e');
+      debugPrint('❌ Location error: $e');
       return null;
     }
   }
 
-  // ================================================
-  // ADD NEW GEOFENCE
-  // ================================================
+  // ──────────────────────────────
+  // ADD GEOFENCE
+  // ──────────────────────────────
   Future<void> addGeofence(
     String name,
     double latitude,
     double longitude,
     double radius,
   ) async {
-    // Create new geofence
-    final geofence = Geofence(
-      id: DateTime.now().millisecondsSinceEpoch.toString(),
+    final id = '${name}_${DateTime.now().millisecondsSinceEpoch}';
+    final model = GeofenceModel(
+      id: id,
       name: name,
       latitude: latitude,
       longitude: longitude,
       radius: radius,
     );
 
-    // Add to list
-    geofences.add(geofence);
-    _persistGeofences();
-    _inside.remove(geofence.id);
-    debugPrint('✅ Added geofence: $name');
+    geofences.add(model);
+    await _persistGeofences();
 
-    if (isTracking.value) {
-      await GeofenceForegroundService().addGeofenceZone(
-        zone: Zone(
-          id: geofence.id,
-          radius: geofence.radius,
-          coordinates: [LatLng.degree(geofence.latitude, geofence.longitude)],
-          triggers: const [GeofenceEventType.enter, GeofenceEventType.exit],
-          notificationResponsivenessMs: 10 * 1000,
-        ),
-      );
+    // Register with native API only if globally enabled
+    if (isGlobalEnabled.value) {
+      await _registerNativeGeofence(model);
     }
+
+    debugPrint('✅ Added geofence: $name (Registered: ${isGlobalEnabled.value})');
   }
 
-  // ================================================
+  Future<void> _registerNativeGeofence(GeofenceModel model) async {
+    final zone = Geofence(
+      id: model.id,
+      location: Location(
+        latitude: model.latitude,
+        longitude: model.longitude,
+      ),
+      radiusMeters: model.radius,
+      triggers: const {GeofenceEvent.enter, GeofenceEvent.exit},
+      iosSettings: const IosGeofenceSettings(initialTrigger: false),
+      androidSettings: AndroidGeofenceSettings(
+        initialTriggers: const {},
+        expiration: const Duration(days: 30), // Extended expiration
+        notificationResponsiveness: const Duration(seconds: 0), // Fastest response
+      ),
+    );
+    await NativeGeofenceManager.instance.createGeofence(zone, geofenceCallback);
+  }
+
+  // ──────────────────────────────
   // REMOVE GEOFENCE
-  // ================================================
-  void removeGeofence(String id) {
+  // ──────────────────────────────
+  Future<void> removeGeofence(String id) async {
     geofences.removeWhere((g) => g.id == id);
-    _persistGeofences();
-    _inside.remove(id);
+    await _persistGeofences();
+    try {
+      await NativeGeofenceManager.instance.removeGeofenceById(id);
+    } catch (e) {
+      debugPrint('⚠️ Error removing native geofence: $e');
+    }
     debugPrint('✅ Removed geofence: $id');
-
-    if (isTracking.value) {
-      GeofenceForegroundService().removeGeofenceZone(zoneId: id);
-    }
   }
 
-  // ================================================
-  // CHECK IF INSIDE ANY GEOFENCE
-  // ================================================
-  Future<void> checkGeofences() async {
-    final now = DateTime.now();
-    if (_lastCheckAt != null &&
-        now.difference(_lastCheckAt!) < const Duration(seconds: 10)) {
-      return;
-    }
-    _lastCheckAt = now;
-
-    // Get where I am right now
-    final position = await getCurrentLocation();
-    if (position == null) return;
-
-    // Check each geofence
-    for (final geofence in geofences) {
-      // Calculate distance from me to geofence center
-      final distance = Geolocator.distanceBetween(
-        position.latitude, // My location
-        position.longitude,
-        geofence.latitude, // Geofence location
-        geofence.longitude,
-      );
-
-      debugPrint(
-        'Distance to ${geofence.name}: ${distance.toStringAsFixed(0)}m',
-      );
-
-      // If I'm within the radius
-      final isInsideNow = distance <= geofence.radius;
-      final wasInside = _inside[geofence.id];
-      if (wasInside == null) {
-        _inside[geofence.id] = isInsideNow;
-        continue;
-      }
-
-      if (!wasInside && isInsideNow) {
-        _inside[geofence.id] = true;
-        await _showNotification(
-          'Entered ${geofence.name}',
-          'You entered ${geofence.name}',
-        );
-      } else if (wasInside && !isInsideNow) {
-        _inside[geofence.id] = false;
-        await _showNotification(
-          'Exited ${geofence.name}',
-          'You left ${geofence.name}',
-        );
-      }
-    }
-  }
-
-  // ================================================
-  // SHOW NOTIFICATION
-  // ================================================
-  Future<void> _showNotification(String title, String body) async {
-    const androidDetails = AndroidNotificationDetails(
-      'geofence_channel',
-      'Geofence Alerts',
-      channelDescription: 'Geofence notifications',
-      importance: Importance.max,
-      priority: Priority.high,
-    );
-    const iosDetails = DarwinNotificationDetails(
-      presentAlert: true,
-      presentBadge: true,
-      presentSound: true,
-    );
-    const details = NotificationDetails(
-      android: androidDetails,
-      iOS: iosDetails,
-    );
-
-    await _notificationPlugin.show(
-      id: DateTime.now().millisecondsSinceEpoch ~/ 1000,
-      title: title,
-      body: body,
-      notificationDetails: details,
-    );
-  }
-
-  // ================================================
-  // START TRACKING (CHECK EVERY 10 SECONDS)
-  // ================================================
+  // ──────────────────────────────
+  // START TRACKING
+  // ──────────────────────────────
   Future<void> startTracking() async {
-    if (geofences.isEmpty) {
-      Get.snackbar('Error', 'Add a geofence first!');
-      return;
-    }
-
-    final started = await GeofenceForegroundService().startGeofencingService(
-      notificationChannelId: 'com.example.my_geofence_app.geofencing',
-      contentTitle: 'Geofence tracking is active',
-      contentText: 'Monitoring your saved geofences in background',
-      serviceId: 525600,
-      callbackDispatcher: geofenceCallbackDispatcher,
-      isInDebugMode: true,
-    );
-
-    if (!started) {
-      Get.snackbar('Error', 'Failed to start background geofencing service');
-      return;
-    }
-
-    await GeofenceForegroundService().removeAllGeoFences();
+    // 1. Register all saved geofences with native manager
     for (final g in geofences) {
-      await GeofenceForegroundService().addGeofenceZone(
-        zone: Zone(
-          id: g.id,
-          radius: g.radius,
-          coordinates: [LatLng.degree(g.latitude, g.longitude)],
-          triggers: [GeofenceEventType.enter, GeofenceEventType.exit],
-          notificationResponsivenessMs: 10 * 1000,
-        ),
-      );
+      await _registerNativeGeofence(g);
     }
 
-    isTracking.value = true;
-    debugPrint('🚀 Tracking started');
+    // 2. Listen to live position stream for map updates
+    _positionSub?.cancel();
+    _positionSub = Geolocator.getPositionStream(
+      locationSettings: const LocationSettings(
+        accuracy: LocationAccuracy.best,
+        distanceFilter: 5,
+      ),
+    ).listen((pos) {
+      currentLocation.value = pos;
+    });
 
-    await getCurrentLocation();
-    _locationPollTimer?.cancel();
-    _locationPollTimer = Timer.periodic(
-      const Duration(seconds: 10),
-      (_) => getCurrentLocation(),
-    );
+    debugPrint('🚀 Tracking (Native Geofencing) ACTIVE');
   }
 
-  // ================================================
+  // ──────────────────────────────
   // STOP TRACKING
-  // ================================================
-  void stopTracking() {
-    isTracking.value = false;
-    _locationPollTimer?.cancel();
-    _locationPollTimer = null;
-    GeofenceForegroundService().stopGeofencingService();
-    debugPrint('🛑 Tracking stopped');
+  // ──────────────────────────────
+  Future<void> stopTracking() async {
+    _positionSub?.cancel();
+    _positionSub = null;
+
+    // Remove all native geofences from OS monitoring
+    try {
+      await NativeGeofenceManager.instance.removeAllGeofences();
+    } catch (e) {
+      debugPrint('⚠️ Error removing all native geofences: $e');
+    }
+    debugPrint('🛑 Tracking STOPPED');
+  }
+
+  @override
+  void onClose() {
+    _positionSub?.cancel();
+    super.onClose();
   }
 }

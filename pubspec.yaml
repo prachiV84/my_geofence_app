@@ -1,5 +1,5 @@
 name: my_geofence_app
-description: "A new Flutter project."
+description: "A Flutter geofence app with map integration."
 publish_to: "none"
 
 version: 1.0.0+1
@@ -11,12 +11,28 @@ dependencies:
   flutter:
     sdk: flutter
   cupertino_icons: ^1.0.8
-  geolocator: ^9.0.2
-  flutter_local_notifications: ^20.1.0
-  geofence_foreground_service: ^1.1.5
-  get_storage: ^2.1.1
+
+  # State management
   get: ^4.6.5
+
+  # Location
+  geolocator: ^9.0.2
+
+  # Map (OpenStreetMap – no API key required)
+  flutter_map: ^7.0.2
+  latlong2: ^0.9.1
+
+  # Geofencing (native iOS CLLocationManager + Android Geofencing API)
+  native_geofence: ^1.2.1
+
+  # Notifications
+  awesome_notifications: ^0.10.0
+
+  # Permissions
   permission_handler: ^12.0.1
+
+  # Persistent storage
+  shared_preferences: ^2.2.3
 
 dev_dependencies:
   flutter_test:
